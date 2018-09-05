@@ -27,7 +27,12 @@
         void *params;               // parameters to pass to the function
         task_dispatch_type_t type;  // asynchronous or synchronous
     } task_t;
-    
+
+    typedef struct linked_task_node {
+        struct task task;
+        struct linked_task_node * next;
+    } node_t;
+
     typedef struct dispatch_queue_t dispatch_queue_t; // the dispatch queue type
     typedef struct dispatch_queue_thread_t dispatch_queue_thread_t; // the dispatch queue thread type
 
@@ -40,6 +45,7 @@
 
     struct dispatch_queue_t {
         queue_type_t queue_type;            // the type of queue - serial or concurrent
+        node_t tasks_linked_list;
     };
     
     task_t *task_create(void (*)(void *), void *, char*);
