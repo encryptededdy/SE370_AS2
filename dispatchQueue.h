@@ -26,10 +26,11 @@
         void (*work)(void *);       // the function to perform
         void *params;               // parameters to pass to the function
         task_dispatch_type_t type;  // asynchronous or synchronous
+        sem_t task_complete_semaphore; // notifies when task is complete (for sync)
     } task_t;
 
     typedef struct linked_task_node {
-        struct task task;
+        struct task * task;
         struct linked_task_node * next;
     } node_t;
 
@@ -45,7 +46,9 @@
 
     struct dispatch_queue_t {
         queue_type_t queue_type;            // the type of queue - serial or concurrent
-        node_t tasks_linked_list;
+        node_t* tasks_linked_list;
+        dispatch_queue_thread_t* threads;
+        sem_t queue_count_semaphore;
     };
     
     task_t *task_create(void (*)(void *), void *, char*);
