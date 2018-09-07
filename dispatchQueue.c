@@ -8,6 +8,8 @@
 #include <string.h>
 #include <unistd.h>
 
+pthread_mutex_t lock;
+
 // Goes to the end of a linkedlist (used for inserts)
 node_t* endof_linkedlist_tasks(node_t *head) {
     while (head->next != NULL) {
@@ -30,7 +32,7 @@ task_t* pop_head(dispatch_queue_t * queue) {
     node_t * nextNode = currentNode->next;
     task_t * task = currentNode->task;
     queue->tasks_linked_list = nextNode;
-    free(currentNode);
+    free(currentNode); // free this!
     return task;
 }
 
@@ -46,8 +48,10 @@ void* thread_helper(void * arg) {
     while (1) {
         sem_wait(&thread->queue->queue_count_semaphore);
         // run task
+        pthread_mutex_lock(&lock); // lock before accessing linkedlist
         task_t * task = pop_head(thread->queue);
-        task->work(task->params);
+        pthread_mutex_unlock(&lock); // unlock when we're done
+        task->work(task->params); // run the task!
         // notify semaphore that we're done
         sem_post(&task->task_complete_semaphore_sync);
         sem_post(task->task_complete_semaphore_wait);
@@ -60,21 +64,23 @@ void* thread_helper(void * arg) {
 dispatch_queue_t *dispatch_queue_create(queue_type_t queueType) {
     dispatch_queue_t *queue;
     // setup queue struct
-    queue = (dispatch_queue_t *) malloc(sizeof(dispatch_queue_t)); // allocate memory (otherwise we escape local scope)
+    queue = malloc(sizeof(dispatch_queue_t)); // allocate memory (otherwise we escape local scope)
     queue->queue_type = queueType; // store queue type
     sem_init(&queue->queue_count_semaphore, 0, 0); // init semaphore
     dispatch_queue_thread_t *threads;
     // store thread array
     if (queueType == CONCURRENT) {
-        threads = (dispatch_queue_thread_t *) malloc(sizeof(dispatch_queue_thread_t) * getNumCores());
+        threads = malloc(sizeof(dispatch_queue_thread_t) * getNumCores());
+        // populate thread array
+        for (int i = 0; i < getNumCores(); i++) {
+            threads[i].queue = queue;
+            pthread_create(&threads[i].thread, NULL, thread_helper, &threads[i]);
+        }
+
     } else {
-        threads = (dispatch_queue_thread_t *) malloc(sizeof(dispatch_queue_thread_t));
-    }
-    // populate thread array
-    for (int i = 0; i < getNumCores(); i++) {
-        threads[i].queue = queue;
-        pthread_create(&threads[i].thread, NULL, thread_helper, &threads[i]);
-        // Thread Semaphore not used... I think...
+        threads = malloc(sizeof(dispatch_queue_thread_t));
+        threads->queue = queue;
+        pthread_create(&threads->thread, NULL, thread_helper, &threads);
     }
     queue->tasks_linked_list = NULL;
     queue->tasks_sem_linked_list = NULL;
@@ -84,7 +90,7 @@ dispatch_queue_t *dispatch_queue_create(queue_type_t queueType) {
 
 task_t *task_create(void (*job)(void *), void *parameters, char *name) {
     task_t *task;
-    task = (task_t *) malloc(sizeof(task_t));
+    task = malloc(sizeof(task_t));
     strncpy(task->name, name, 64); // max length 64 chars so we can just copy it all
     task->params = parameters;
     // task->type is set when adding to queue
@@ -97,7 +103,7 @@ task_t *task_create(void (*job)(void *), void *parameters, char *name) {
 void task_destroy(task_t * task) {
     // Destroy a task and everything inside.
     sem_destroy(&task->task_complete_semaphore_sync);
-    // Don't destroy the other semaphore as it's technically part of the queue
+    // Don't destroy the other semaphore as it's part of the queue, and is used for dispatch_queue_wait
     free(task);
 }
 
@@ -111,9 +117,10 @@ void dispatch_async(dispatch_queue_t * queue, task_t * task) {
     task->type = ASYNC;
     // Create the node that we'll add to the linked list
     node_t *node;
-    node = (node_t *) malloc(sizeof(node_t));
+    node = malloc(sizeof(node_t));
     node->task = task;
     node->next = NULL;
+    pthread_mutex_lock(&lock); // lock before accessing linkedlist
     if (queue->tasks_linked_list == NULL) {
         // Add new linked task node
         queue->tasks_linked_list = node;
@@ -122,9 +129,10 @@ void dispatch_async(dispatch_queue_t * queue, task_t * task) {
         node_t *end = endof_linkedlist_tasks(queue->tasks_linked_list);
         end->next = node;
     }
+    pthread_mutex_unlock(&lock); // lock after accessing linkedlist
     // Generate completion semaphore, add to linkedlist
     node_ts *semnode;
-    semnode = (node_ts *) malloc(sizeof(node_ts));
+    semnode = malloc(sizeof(node_ts));
     sem_init(&semnode->task_complete_semaphore_wait, 0, 0);
     task->task_complete_semaphore_wait = &semnode->task_complete_semaphore_wait;
     semnode->next = NULL;
@@ -140,22 +148,48 @@ void dispatch_async(dispatch_queue_t * queue, task_t * task) {
     sem_post(&queue->queue_count_semaphore);
 }
 
-void perform_wait(node_ts* head) {
+// Recursively waits for all tasks to finish. destroyOnly means we don't wait, just dismantle the linkedlist.
+void perform_wait(node_ts* head, int destroyOnly) {
     if (head->next != NULL) {
-        perform_wait(head->next);
+        perform_wait(head->next, destroyOnly);
     }
-    sem_wait(&head->task_complete_semaphore_wait);
+    // Wait for sem to be ready
+    if (destroyOnly == 0) {
+        sem_wait(&head->task_complete_semaphore_wait);
+    }
+    // Free everything before returning
     sem_destroy(&head->task_complete_semaphore_wait);
     free(head);
 }
 
 void dispatch_queue_wait(dispatch_queue_t * queue) {
     node_ts* head = queue->tasks_sem_linked_list;
-    perform_wait(head);
+    perform_wait(head, 0);
+    // Set to NULL so we won't try to clear it later
+    queue->tasks_sem_linked_list = NULL;
 }
 
 void dispatch_queue_destroy(dispatch_queue_t * queue) {
     sem_destroy(&queue->queue_count_semaphore);
+    // Destroy threads
+    if (queue->queue_type == CONCURRENT) {
+        // kill entire thread array
+        for (int i = 0; i < getNumCores(); i++) {
+            queue->threads[i].queue = queue;
+            pthread_cancel(queue->threads[i].thread);
+        }
+
+    } else {
+        queue->threads->queue = queue;
+        pthread_cancel(queue->threads->thread);
+    }
+    free(queue->threads);
+    // Tasks Linked Lists dismantles itself in pop_head so we don't need to free anything
+
+    // destroy the dispatch_queue_wait if we didn't use it
+    if (queue->tasks_sem_linked_list != NULL) {
+        perform_wait(queue->tasks_sem_linked_list, 1);
+    }
     free(queue);
 }
 
