@@ -9,7 +9,15 @@
 #include <unistd.h>
 
 // Goes to the end of a linkedlist (used for inserts)
-node_t* endof_linkedlist(node_t * head) {
+node_t* endof_linkedlist_tasks(node_t *head) {
+    while (head->next != NULL) {
+        head = head->next;
+    }
+    return head;
+}
+
+// As above, but for the semaphore linkedlist
+node_ts* endof_linkedlist_tasksem(node_ts *head) {
     while (head->next != NULL) {
         head = head->next;
     }
@@ -18,6 +26,7 @@ node_t* endof_linkedlist(node_t * head) {
 
 task_t* pop_head(dispatch_queue_t * queue) {
     node_t * currentNode = queue->tasks_linked_list;
+    // technically may be undefined, but doesn't matter because semaphore limits the amount of times we call this
     node_t * nextNode = currentNode->next;
     task_t * task = currentNode->task;
     queue->tasks_linked_list = nextNode;
@@ -40,7 +49,8 @@ void* thread_helper(void * arg) {
         task_t * task = pop_head(thread->queue);
         task->work(task->params);
         // notify semaphore that we're done
-        sem_post(&task->task_complete_semaphore);
+        sem_post(&task->task_complete_semaphore_sync);
+        sem_post(task->task_complete_semaphore_wait);
         // Destroy task
         task_destroy(task);
     }
@@ -65,9 +75,9 @@ dispatch_queue_t *dispatch_queue_create(queue_type_t queueType) {
         threads[i].queue = queue;
         pthread_create(&threads[i].thread, NULL, thread_helper, &threads[i]);
         // Thread Semaphore not used... I think...
-        // Thread task not allocated yet
     }
-
+    queue->tasks_linked_list = NULL;
+    queue->tasks_sem_linked_list = NULL;
     queue->threads = threads;
     return queue;
 }
@@ -79,35 +89,22 @@ task_t *task_create(void (*job)(void *), void *parameters, char *name) {
     task->params = parameters;
     // task->type is set when adding to queue
     task->work = job;
-    sem_init(&task->task_complete_semaphore, 0, 0); // setup task complete sem
+    sem_init(&task->task_complete_semaphore_sync, 0, 0); // setup task complete sems
+    // The other semaphore is inited when we add this task to a queue
     return task;
 }
 
 void task_destroy(task_t * task) {
     // Destroy a task and everything inside.
-    sem_destroy(&task->task_complete_semaphore);
+    sem_destroy(&task->task_complete_semaphore_sync);
+    // Don't destroy the other semaphore as it's technically part of the queue
     free(task);
 }
 
 void dispatch_sync(dispatch_queue_t * queue, task_t * task) {
-    task->type = SYNC;
-    // Create the node that we'll add to the linked list
-    node_t *node;
-    node = (node_t *) malloc(sizeof(node_t));
-    node->task = task;
-    node->next = NULL;
-    if (queue->tasks_linked_list == NULL) {
-        // Add new linked task node
-        queue->tasks_linked_list = node;
-    } else {
-        // Insert at end of LinkedList!
-        node_t *end = endof_linkedlist(queue->tasks_linked_list);
-        end->next = node;
-    }
-    // Increment semaphore to get a thread to pick it up
-    sem_post(&queue->queue_count_semaphore);
+    dispatch_async(queue, task);
     // Since we're SYNC, wait for the task to complete before we return
-    sem_wait(&task->task_complete_semaphore);
+    sem_wait(&task->task_complete_semaphore_sync);
 }
 
 void dispatch_async(dispatch_queue_t * queue, task_t * task) {
@@ -122,15 +119,39 @@ void dispatch_async(dispatch_queue_t * queue, task_t * task) {
         queue->tasks_linked_list = node;
     } else {
         // Insert at end of LinkedList!
-        node_t *end = endof_linkedlist(queue->tasks_linked_list);
+        node_t *end = endof_linkedlist_tasks(queue->tasks_linked_list);
         end->next = node;
     }
+    // Generate completion semaphore, add to linkedlist
+    node_ts *semnode;
+    semnode = (node_ts *) malloc(sizeof(node_ts));
+    sem_init(&semnode->task_complete_semaphore_wait, 0, 0);
+    task->task_complete_semaphore_wait = &semnode->task_complete_semaphore_wait;
+    semnode->next = NULL;
+    // Add to linkedlist
+    if (queue->tasks_sem_linked_list == NULL) {
+        queue->tasks_sem_linked_list = semnode;
+    } else {
+        node_ts* end = endof_linkedlist_tasksem(queue->tasks_sem_linked_list);
+        end->next = semnode;
+    }
+
     // Increment semaphore to get a thread to pick it up
     sem_post(&queue->queue_count_semaphore);
 }
 
-void dispatch_queue_wait(dispatch_queue_t * queue) {
+void perform_wait(node_ts* head) {
+    if (head->next != NULL) {
+        perform_wait(head->next);
+    }
+    sem_wait(&head->task_complete_semaphore_wait);
+    sem_destroy(&head->task_complete_semaphore_wait);
+    free(head);
+}
 
+void dispatch_queue_wait(dispatch_queue_t * queue) {
+    node_ts* head = queue->tasks_sem_linked_list;
+    perform_wait(head);
 }
 
 void dispatch_queue_destroy(dispatch_queue_t * queue) {
