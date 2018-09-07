@@ -167,6 +167,9 @@ void dispatch_for(dispatch_queue_t * queue, long count, void (*job)(long)) {
         sem_wait(semarray[i]);
     }
 
+    // Free the memory we allocated to the array
+    free(semarray);
+
 }
 
 // Recursively waits for all tasks to finish. destroyOnly means we don't wait, just dismantle the linkedlist.
