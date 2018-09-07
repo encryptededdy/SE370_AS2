@@ -17,9 +17,11 @@ node_t* endof_linkedlist(node_t * head) {
 }
 
 task_t* pop_head(dispatch_queue_t * queue) {
-    node_t * nextNode = queue->tasks_linked_list->next;
-    task_t * task = queue->tasks_linked_list->task;
+    node_t * currentNode = queue->tasks_linked_list;
+    node_t * nextNode = currentNode->next;
+    task_t * task = currentNode->task;
     queue->tasks_linked_list = nextNode;
+    free(currentNode);
     return task;
 }
 
@@ -39,6 +41,8 @@ void* thread_helper(void * arg) {
         task->work(task->params);
         // notify semaphore that we're done
         sem_post(&task->task_complete_semaphore);
+        // Destroy task
+        task_destroy(task);
     }
 }
 #pragma clang diagnostic pop
@@ -79,12 +83,19 @@ task_t *task_create(void (*job)(void *), void *parameters, char *name) {
     return task;
 }
 
-int dispatch_sync(dispatch_queue_t * queue, task_t * task) {
+void task_destroy(task_t * task) {
+    // Destroy a task and everything inside.
+    sem_destroy(&task->task_complete_semaphore);
+    free(task);
+}
+
+void dispatch_sync(dispatch_queue_t * queue, task_t * task) {
     task->type = SYNC;
     // Create the node that we'll add to the linked list
     node_t *node;
     node = (node_t *) malloc(sizeof(node_t));
     node->task = task;
+    node->next = NULL;
     if (queue->tasks_linked_list == NULL) {
         // Add new linked task node
         queue->tasks_linked_list = node;
@@ -93,10 +104,37 @@ int dispatch_sync(dispatch_queue_t * queue, task_t * task) {
         node_t *end = endof_linkedlist(queue->tasks_linked_list);
         end->next = node;
     }
-    // TODO: How to sync?
+    // Increment semaphore to get a thread to pick it up
+    sem_post(&queue->queue_count_semaphore);
+    // Since we're SYNC, wait for the task to complete before we return
+    sem_wait(&task->task_complete_semaphore);
+}
+
+void dispatch_async(dispatch_queue_t * queue, task_t * task) {
+    task->type = ASYNC;
+    // Create the node that we'll add to the linked list
+    node_t *node;
+    node = (node_t *) malloc(sizeof(node_t));
+    node->task = task;
+    node->next = NULL;
+    if (queue->tasks_linked_list == NULL) {
+        // Add new linked task node
+        queue->tasks_linked_list = node;
+    } else {
+        // Insert at end of LinkedList!
+        node_t *end = endof_linkedlist(queue->tasks_linked_list);
+        end->next = node;
+    }
+    // Increment semaphore to get a thread to pick it up
+    sem_post(&queue->queue_count_semaphore);
+}
+
+void dispatch_queue_wait(dispatch_queue_t * queue) {
+
 }
 
 void dispatch_queue_destroy(dispatch_queue_t * queue) {
+    sem_destroy(&queue->queue_count_semaphore);
     free(queue);
 }
 

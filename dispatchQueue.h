@@ -59,12 +59,12 @@
     
     void dispatch_queue_destroy(dispatch_queue_t *);
     
-    int dispatch_async(dispatch_queue_t *, task_t *);
+    void dispatch_async(dispatch_queue_t *, task_t *);
     
-    int dispatch_sync(dispatch_queue_t *, task_t *);
+    void dispatch_sync(dispatch_queue_t *, task_t *);
     
     void dispatch_for(dispatch_queue_t *, long, void (*)(long));
     
-    int dispatch_queue_wait(dispatch_queue_t *);
+    void dispatch_queue_wait(dispatch_queue_t *);
 
 #endif	/* DISPATCHQUEUE_H */
