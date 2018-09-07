@@ -68,19 +68,21 @@ dispatch_queue_t *dispatch_queue_create(queue_type_t queueType) {
     queue->queue_type = queueType; // store queue type
     sem_init(&queue->queue_count_semaphore, 0, 0); // init semaphore
     dispatch_queue_thread_t *threads;
-    // store thread array
-    if (queueType == CONCURRENT) {
-        threads = malloc(sizeof(dispatch_queue_thread_t) * getNumCores());
-        // populate thread array
-        for (int i = 0; i < getNumCores(); i++) {
-            threads[i].queue = queue;
-            pthread_create(&threads[i].thread, NULL, thread_helper, &threads[i]);
-        }
 
+    // thread array is size 1 if serial, else is equal to numcores
+    int numCores;
+    if (queueType == CONCURRENT) {
+        numCores = getNumCores();
     } else {
-        threads = malloc(sizeof(dispatch_queue_thread_t));
-        threads->queue = queue;
-        pthread_create(&threads->thread, NULL, thread_helper, &threads);
+        numCores = 1;
+    }
+
+    // store thread array
+    threads = malloc(sizeof(dispatch_queue_thread_t) * numCores);
+    // populate thread array
+    for (int i = 0; i < numCores; i++) {
+        threads[i].queue = queue;
+        pthread_create(&threads[i].thread, NULL, thread_helper, &threads[i]);
     }
     queue->tasks_linked_list = NULL;
     queue->tasks_sem_linked_list = NULL;
@@ -146,6 +148,25 @@ void dispatch_async(dispatch_queue_t * queue, task_t * task) {
 
     // Increment semaphore to get a thread to pick it up
     sem_post(&queue->queue_count_semaphore);
+}
+
+void dispatch_for(dispatch_queue_t * queue, long count, void (*job)(long)) {
+    // Setup semarray to store the semaphores we need to use to wait
+    sem_t **semarray;
+    semarray = malloc(sizeof(sem_t*) * count);
+
+    for (long i = 0; i < count; i++) {
+        task_t *task;
+        task = task_create((void (*)(void *)) job, (void *) i, "ForDispatchTask");
+        dispatch_async(queue, task);
+        semarray[i] = &task->task_complete_semaphore_sync; // get semaphore
+    }
+
+    // now all tasks are dispatched, we just need to wait for all the semaphores
+    for (long i = 0; i < count; i++) {
+        sem_wait(semarray[i]);
+    }
+
 }
 
 // Recursively waits for all tasks to finish. destroyOnly means we don't wait, just dismantle the linkedlist.
