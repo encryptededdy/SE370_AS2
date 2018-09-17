@@ -131,7 +131,7 @@ void dispatch_async(dispatch_queue_t * queue, task_t * task) {
         node_t *end = endof_linkedlist_tasks(queue->tasks_linked_list);
         end->next = node;
     }
-    pthread_mutex_unlock(&lock); // lock after accessing linkedlist
+    pthread_mutex_unlock(&lock); // unlock after accessing linkedlist
     // Generate completion semaphore, add to linkedlist
     node_ts *semnode;
     semnode = malloc(sizeof(node_ts));

@@ -2,7 +2,7 @@
  * File:   dispatchQueue.h
  * Author: robert
  *
- * Modified by: your UPI
+ * Modified by: ezha210
  */
 
 #ifndef DISPATCHQUEUE_H
@@ -46,8 +46,6 @@
     struct dispatch_queue_thread_t {
         dispatch_queue_t *queue;// the queue this thread is associated with
         pthread_t thread;       // the thread which runs the task
-        sem_t thread_semaphore; // the semaphore the thread waits on until a task is allocated
-        task_t *task;           // the current task for this tread
     };
 
     struct dispatch_queue_t {
